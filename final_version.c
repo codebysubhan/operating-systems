@@ -10,8 +10,8 @@
 
 #define MAX_LEN 512
 #define MAXARGS 10
-#define ARGLEN 30
 #define HISTORY_SIZE 10
+#define MAXVARS 20  // Max number of variables
 #define PROMPT "PUCITshell:- "
 
 typedef struct {
@@ -19,22 +19,36 @@ typedef struct {
     char command[MAX_LEN];
 } Job;
 
+struct var {
+    char *name;
+    char *value;
+    int global;  // 0 for local, 1 for global
+};
+
 Job jobs[HISTORY_SIZE];
 int job_count = 0;
 
 char* history[HISTORY_SIZE];
 int history_count = 0;
 
+struct var var_table[MAXVARS];
+int var_count = 0;
+
+// Function Prototypes
 void sigchld_handler(int sig);
 void add_to_history(char* cmd);
 void add_job(pid_t pid, char* command);
 void remove_job(pid_t pid);
 void list_jobs();
+void set_var(char *name, char *value, int global);
+char* get_var(char *name);
+void list_vars();
 int handle_builtin(char* arglist[]);
 char* read_cmd(char* prompt, FILE* fp);
 char** tokenize(char* cmdline);
 int execute(char* arglist[], int background);
 int handle_redirection_and_pipes(char* cmdline);
+void parse_and_execute(char* cmdline);
 
 int main() {
     for (int i = 0; i < HISTORY_SIZE; i++) {
@@ -46,29 +60,27 @@ int main() {
 
     char *cmdline;
     while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
-        char **arglist = tokenize(cmdline);
-
-        if (arglist[0] == NULL) {
-            free(cmdline);
-            continue;
-        }
-
-        add_to_history(cmdline);
-
-        if (handle_builtin(arglist) == 0) {
-            free(cmdline);
-            continue;
-        }
-
-        if (handle_redirection_and_pipes(cmdline) != 0) {
-            free(cmdline);
-            continue;
-        }
-
+        parse_and_execute(cmdline);
         free(cmdline);
     }
     printf("\n");
     return 0;
+}
+
+void parse_and_execute(char* cmdline) {
+    add_to_history(cmdline);
+
+    char *equals_sign = strchr(cmdline, '=');
+    if (equals_sign) {
+        *equals_sign = '\0';
+        char *name = cmdline;
+        char *value = equals_sign + 1;
+        set_var(name, value, 0);  // Local variable by default
+    } else {
+        if (handle_redirection_and_pipes(cmdline) != 0) {
+            printf("Error executing command\n");
+        }
+    }
 }
 
 void sigchld_handler(int sig) {
@@ -77,16 +89,13 @@ void sigchld_handler(int sig) {
 
 char* read_cmd(char* prompt, FILE* fp) {
     printf("%s", prompt);
-    int c;
-    int pos = 0;
+    int c, pos = 0;
     char* cmdline = (char*)malloc(sizeof(char) * MAX_LEN);
     while ((c = getc(fp)) != EOF) {
-        if (c == '\n')
-            break;
+        if (c == '\n') break;
         cmdline[pos++] = c;
     }
-    if (c == EOF && pos == 0)
-        return NULL;
+    if (c == EOF && pos == 0) return NULL;
     cmdline[pos] = '\0';
     return cmdline;
 }
@@ -94,20 +103,18 @@ char* read_cmd(char* prompt, FILE* fp) {
 char** tokenize(char* cmdline) {
     char** arglist = (char**)malloc(sizeof(char*) * (MAXARGS + 1));
     for (int j = 0; j < MAXARGS + 1; j++) {
-        arglist[j] = (char*)malloc(sizeof(char) * ARGLEN);
-        bzero(arglist[j], ARGLEN);
+        arglist[j] = (char*)malloc(sizeof(char) * 30);
+        bzero(arglist[j], 30);
     }
     int argnum = 0;
     char* cp = cmdline;
     char* start;
     int len;
     while (*cp != '\0') {
-        while (*cp == ' ' || *cp == '\t')
-            cp++;
+        while (*cp == ' ' || *cp == '\t') cp++;
         start = cp;
         len = 1;
-        while (*++cp != '\0' && !(*cp == ' ' || *cp == '\t'))
-            len++;
+        while (*++cp != '\0' && !(*cp == ' ' || *cp == '\t')) len++;
         strncpy(arglist[argnum], start, len);
         arglist[argnum][len] = '\0';
         argnum++;
@@ -153,15 +160,58 @@ void list_jobs() {
     }
 }
 
-int handle_builtin(char* arglist[]) {
-    if (strcmp(arglist[0], "cd") == 0) {
-        if (arglist[1] != NULL) {
-            if (chdir(arglist[1]) != 0) {
-                perror("cd failed");
-            }
-        } else {
-            fprintf(stderr, "cd: missing argument\n");
+void set_var(char *name, char *value, int global) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(var_table[i].name, name) == 0) {
+            free(var_table[i].value);
+            var_table[i].value = strdup(value);
+            var_table[i].global = global;
+            if (global) setenv(name, value, 1);
+            return;
         }
+    }
+    if (var_count < MAXVARS) {
+        var_table[var_count].name = strdup(name);
+        var_table[var_count].value = strdup(value);
+        var_table[var_count].global = global;
+        if (global) setenv(name, value, 1);
+        var_count++;
+    } else {
+        printf("Variable limit reached.\n");
+    }
+}
+
+char* get_var(char *name) {
+    for (int i = 0; i < var_count; i++) {
+        if (strcmp(var_table[i].name, name) == 0) {
+            return var_table[i].value;
+        }
+    }
+    return getenv(name);
+}
+
+void list_vars() {
+    printf("Local and environment variables:\n");
+    for (int i = 0; i < var_count; i++) {
+        printf("%s=%s (local)\n", var_table[i].name, var_table[i].value);
+    }
+}
+
+int handle_builtin(char* arglist[]) {
+    if (strcmp(arglist[0], "set") == 0) {
+        list_vars();
+        return 0;
+    } else if (strcmp(arglist[0], "export") == 0) {
+        if (arglist[1] != NULL) {
+            set_var(arglist[1], get_var(arglist[1]), 1);
+        } else {
+            printf("Usage: export <variable>\n");
+        }
+        return 0;
+    } else if (strcmp(arglist[0], "cd") == 0) {
+        if (arglist[1] != NULL) {
+            if (chdir(arglist[1]) != 0) perror("cd failed");
+        } else printf("cd: missing argument\n");
         return 0;
     } else if (strcmp(arglist[0], "exit") == 0) {
         exit(0);
