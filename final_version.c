@@ -10,6 +10,7 @@
 #define MAX_LEN 512
 #define MAXARGS 10
 #define ARGLEN 30
+#define HISTORY_SIZE 10
 #define PROMPT "PUCITshell:- "
 
 int execute(char* arglist[], int background);
@@ -17,14 +18,49 @@ char** tokenize(char* cmdline);
 char* read_cmd(char*, FILE*);
 int handle_redirection_and_pipes(char* cmdline);
 void sigchld_handler(int sig);
+void add_to_history(char* cmd);
+char* get_command_from_history(int index);
+
+char* history[HISTORY_SIZE];
+int history_count = 0;
 
 int main() {
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+        history[i] = NULL;
+    }
+
     // Handle SIGCHLD to prevent zombies
     signal(SIGCHLD, sigchld_handler);
     
     char *cmdline;
     char *prompt = PROMPT;
     while ((cmdline = read_cmd(prompt, stdin)) != NULL) {
+        // Check for history command
+        if (cmdline[0] == '!') {
+            int index;
+            if (strcmp(cmdline, "!-1") == 0) {
+                index = history_count - 1;
+            } else if (cmdline[1] >= '0' && cmdline[1] <= '9') {
+                index = atoi(cmdline + 1) - 1;
+            } else {
+                printf("Invalid history command.\n");
+                free(cmdline);
+                continue;
+            }
+
+            if (index < 0 || index >= history_count || history[index] == NULL) {
+                printf("No such command in history.\n");
+                free(cmdline);
+                continue;
+            }
+
+            free(cmdline);
+            cmdline = strdup(history[index]);
+            printf("%s\n", cmdline);
+        } else {
+            add_to_history(cmdline);
+        }
+
         if (handle_redirection_and_pipes(cmdline) != 0) {
             free(cmdline);
             continue;
@@ -176,4 +212,21 @@ char* read_cmd(char* prompt, FILE* fp) {
         return NULL;
     cmdline[pos] = '\0';
     return cmdline;
+}
+
+void add_to_history(char* cmd) {
+    if (history_count == HISTORY_SIZE) {
+        free(history[0]);
+        for (int i = 1; i < HISTORY_SIZE; i++) {
+            history[i - 1] = history[i];
+        }
+        history_count--;
+    }
+    history[history_count++] = strdup(cmd);
+}
+
+char* get_command_from_history(int index) {
+    if (index < 0 || index >= history_count)
+        return NULL;
+    return history[index];
 }
